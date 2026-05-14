@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>アナログ時計</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a2e;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+    }
+    canvas { display: block; }
+    #date {
+      margin-top: 24px;
+      color: #a0aec0;
+      font-family: 'Helvetica Neue', sans-serif;
+      font-size: 20px;
+      letter-spacing: 0.1em;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="clock"></canvas>
+  <div id="date"></div>
+
+  <script>
+    const canvas = document.getElementById('clock');
+    const ctx = canvas.getContext('2d');
+    const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
+
+    function resize() {
+      const size = Math.min(window.innerWidth, window.innerHeight) * 0.85;
+      canvas.width = size;
+      canvas.height = size;
+    }
+
+    function draw() {
+      const now = new Date();
+      const W = canvas.width;
+      const cx = W / 2;
+      const cy = W / 2;
+      const R = W / 2 * 0.92;
+
+      ctx.clearRect(0, 0, W, W);
+
+      // 外枠のグロー
+      const gradient = ctx.createRadialGradient(cx, cy, R * 0.7, cx, cy, R);
+      gradient.addColorStop(0, '#16213e');
+      gradient.addColorStop(1, '#0f3460');
+      ctx.beginPath();
+      ctx.arc(cx, cy, R, 0, Math.PI * 2);
+      ctx.fillStyle = gradient;
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(cx, cy, R, 0, Math.PI * 2);
+      ctx.strokeStyle = '#e94560';
+      ctx.lineWidth = W * 0.012;
+      ctx.stroke();
+
+      // 目盛り
+      for (let i = 0; i < 60; i++) {
+        const angle = (i / 60) * Math.PI * 2 - Math.PI / 2;
+        const isHour = i % 5 === 0;
+        const inner = R * (isHour ? 0.78 : 0.86);
+        const outer = R * 0.92;
+        ctx.beginPath();
+        ctx.moveTo(cx + Math.cos(angle) * inner, cy + Math.sin(angle) * inner);
+        ctx.lineTo(cx + Math.cos(angle) * outer, cy + Math.sin(angle) * outer);
+        ctx.strokeStyle = isHour ? '#e2e8f0' : '#4a5568';
+        ctx.lineWidth = isHour ? W * 0.008 : W * 0.003;
+        ctx.stroke();
+      }
+
+      // 数字
+      ctx.fillStyle = '#e2e8f0';
+      ctx.font = `bold ${W * 0.065}px 'Helvetica Neue', sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (let i = 1; i <= 12; i++) {
+        const angle = (i / 12) * Math.PI * 2 - Math.PI / 2;
+        const nr = R * 0.65;
+        ctx.fillText(i, cx + Math.cos(angle) * nr, cy + Math.sin(angle) * nr);
+      }
+
+      const sec  = now.getSeconds() + now.getMilliseconds() / 1000;
+      const min  = now.getMinutes() + sec / 60;
+      const hour = (now.getHours() % 12) + min / 60;
+
+      // 時針
+      drawHand(ctx, cx, cy, (hour / 12) * Math.PI * 2 - Math.PI / 2,
+        R * 0.48, W * 0.022, '#e2e8f0');
+      // 分針
+      drawHand(ctx, cx, cy, (min / 60) * Math.PI * 2 - Math.PI / 2,
+        R * 0.7, W * 0.015, '#e2e8f0');
+      // 秒針
+      drawHand(ctx, cx, cy, (sec / 60) * Math.PI * 2 - Math.PI / 2,
+        R * 0.78, W * 0.006, '#e94560');
+
+      // 中心点
+      ctx.beginPath();
+      ctx.arc(cx, cy, W * 0.018, 0, Math.PI * 2);
+      ctx.fillStyle = '#e94560';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(cx, cy, W * 0.007, 0, Math.PI * 2);
+      ctx.fillStyle = '#fff';
+      ctx.fill();
+
+      // 日付表示
+      const y  = now.getFullYear();
+      const mo = String(now.getMonth() + 1).padStart(2, '0');
+      const d  = String(now.getDate()).padStart(2, '0');
+      const wd = weekdays[now.getDay()];
+      document.getElementById('date').textContent = `${y}年${mo}月${d}日（${wd}）`;
+    }
+
+    function drawHand(ctx, cx, cy, angle, length, width, color) {
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + Math.cos(angle) * length, cy + Math.sin(angle) * length);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+    }
+
+    function tick() {
+      draw();
+      requestAnimationFrame(tick);
+    }
+
+    window.addEventListener('resize', () => { resize(); draw(); });
+    resize();
+    tick();
+  </script>
+</body>
+</html>
