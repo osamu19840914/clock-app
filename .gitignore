@@ -1,0 +1,6 @@
+# Ignore everything
+*
+
+# But track CLAUDE.md
+!CLAUDE.md
+!.gitignore
