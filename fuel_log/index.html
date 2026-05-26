@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>燃費ログ ダッシュボード</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;700;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:#0d1117; --surface:#161b22; --surface2:#1c2330; --border:#30363d;
+    --accent:#e8a838; --accent2:#4fc3f7; --accent3:#81c784;
+    --text:#e6edf3; --muted:#7d8590;
+  }
+  *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:'Zen Kaku Gothic New',sans-serif; min-height:100vh; padding:32px 24px; }
+
+  /* ── Header ── */
+  header { margin-bottom:32px; border-left:4px solid var(--accent); padding-left:20px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+  header h1 { font-size:2rem; font-weight:900; color:var(--accent); }
+  header p  { color:var(--muted); font-size:0.85rem; margin-top:4px; font-family:'JetBrains Mono',monospace; }
+  .reload-btn { background:var(--surface); border:1px solid var(--border); color:var(--accent2); border-radius:8px; padding:8px 18px; font-family:'Zen Kaku Gothic New',sans-serif; font-weight:700; font-size:0.85rem; cursor:pointer; transition:opacity .15s; }
+  .reload-btn:hover { opacity:.8; }
+  .reload-btn:disabled { opacity:.4; cursor:not-allowed; }
+
+  /* ── Loading / Error ── */
+  #loading { text-align:center; padding:80px 0; color:var(--muted); font-family:'JetBrains Mono',monospace; font-size:0.9rem; }
+  #error-box { background:#1a0a0a; border:1px solid #ef5350; border-radius:12px; padding:24px; margin-bottom:24px; display:none; }
+  #error-box h2 { color:#ef5350; margin-bottom:8px; }
+  #error-box pre { font-size:0.82rem; color:#ffcdd2; white-space:pre-wrap; font-family:'JetBrains Mono',monospace; }
+
+  /* ── KPI ── */
+  .kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:16px; margin-bottom:36px; }
+  .kpi { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:20px; position:relative; overflow:hidden; }
+  .kpi::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; }
+  .kpi.gold::before  { background:var(--accent); }
+  .kpi.blue::before  { background:var(--accent2); }
+  .kpi.green::before { background:var(--accent3); }
+  .kpi.red::before   { background:#ef5350; }
+  .kpi-label { font-size:0.72rem; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px; }
+  .kpi-value { font-size:1.9rem; font-weight:900; font-family:'JetBrains Mono',monospace; line-height:1; }
+  .kpi.gold  .kpi-value { color:var(--accent); }
+  .kpi.blue  .kpi-value { color:var(--accent2); }
+  .kpi.green .kpi-value { color:var(--accent3); }
+  .kpi.red   .kpi-value { color:#ef5350; }
+  .kpi-unit { font-size:0.8rem; color:var(--muted); margin-top:4px; font-family:'JetBrains Mono',monospace; }
+
+  /* ── Cards ── */
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:28px; margin-bottom:24px; }
+  .card-title { font-size:.78rem; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.1em; margin-bottom:24px; display:flex; align-items:center; gap:8px; }
+  .card-title::before { content:''; display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--accent); }
+  canvas { max-height:320px; }
+
+  /* ── 月別 ── */
+  .monthly-avg { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:10px; }
+  .month-item  { background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px; display:flex; flex-direction:column; gap:4px; }
+  .month-name  { font-size:.72rem; color:var(--muted); font-family:'JetBrains Mono',monospace; }
+  .month-val   { font-size:1.2rem; font-weight:700; font-family:'JetBrains Mono',monospace; color:var(--accent2); }
+  .bar-bg  { height:4px; background:var(--border); border-radius:2px; margin-top:6px; }
+  .bar-fill{ height:100%; border-radius:2px; background:var(--accent2); }
+
+  /* ── Table ── */
+  .table-wrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:.88rem; font-family:'JetBrains Mono',monospace; }
+  th, td { padding:10px 16px; text-align:right; border-bottom:1px solid var(--border); }
+  th { color:var(--muted); font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; background:var(--surface2); }
+  th:first-child, td:first-child { text-align:left; }
+  tr:hover td { background:var(--surface2); }
+  td.hi { color:var(--accent3); font-weight:700; }
+  td.lo { color:#ef5350; font-weight:700; }
+
+  .last-updated { font-size:.72rem; color:var(--muted); font-family:'JetBrains Mono',monospace; margin-bottom:28px; }
+  footer { margin-top:40px; text-align:center; font-size:.75rem; color:var(--muted); font-family:'JetBrains Mono',monospace; }
+
+  #dashboard { display:none; }
+  #dashboard.visible { display:block; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>⛽ 燃費ログ</h1>
+    <p id="header-sub">読み込み中...</p>
+  </div>
+  <button class="reload-btn" id="reload-btn" onclick="loadData()" disabled>↻ 最新データを取得</button>
+</header>
+
+<div id="loading">Notionからデータを取得中...</div>
+<div id="error-box"><h2>エラーが発生しました</h2><pre id="error-detail"></pre></div>
+
+<div id="dashboard">
+  <div class="last-updated" id="last-updated"></div>
+
+  <div class="kpi-grid">
+    <div class="kpi gold">  <div class="kpi-label">平均燃費</div>   <div class="kpi-value" id="s-avg">—</div>   <div class="kpi-unit">km/L</div></div>
+    <div class="kpi green"> <div class="kpi-label">最高燃費</div>   <div class="kpi-value" id="s-best">—</div>  <div class="kpi-unit">km/L</div></div>
+    <div class="kpi red">   <div class="kpi-label">最低燃費</div>   <div class="kpi-value" id="s-worst">—</div> <div class="kpi-unit">km/L</div></div>
+    <div class="kpi blue">  <div class="kpi-label">総走行距離</div> <div class="kpi-value" id="s-dist">—</div>  <div class="kpi-unit">km</div></div>
+    <div class="kpi blue">  <div class="kpi-label">総給油量</div>   <div class="kpi-value" id="s-fuel">—</div>  <div class="kpi-unit">L</div></div>
+    <div class="kpi gold">  <div class="kpi-label">給油回数</div>   <div class="kpi-value" id="s-count">—</div> <div class="kpi-unit">回</div></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">燃費推移（km/L）</div>
+    <canvas id="chart-fuel"></canvas>
+  </div>
+
+  <div class="card">
+    <div class="card-title">給油量 / 走行距離</div>
+    <canvas id="chart-dual"></canvas>
+  </div>
+
+  <div class="card">
+    <div class="card-title">月別平均燃費</div>
+    <div class="monthly-avg" id="monthly-grid"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">給油記録一覧（新しい順）</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>日付</th>
+          <th>走行距離（km）</th>
+          <th>給油量（L）</th>
+          <th>燃費（km/L）</th>
+        </tr></thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<footer>index.html — /api/fuel-log 連携版</footer>
+
+<script>
+let chart1=null, chart2=null;
+const TOOLTIP = { backgroundColor:'#1c2330', borderColor:'#30363d', borderWidth:1, titleColor:'#e6edf3', bodyColor:'#e6edf3' };
+const LEGEND  = { labels:{ color:'#7d8590', font:{ size:11 } } };
+
+async function loadData() {
+  const loading = document.getElementById('loading');
+  const errBox  = document.getElementById('error-box');
+  const dash    = document.getElementById('dashboard');
+  const btn     = document.getElementById('reload-btn');
+
+  loading.style.display = 'block';
+  errBox.style.display  = 'none';
+  dash.classList.remove('visible');
+  btn.disabled = true;
+
+  let records;
+  try {
+    const resp = await fetch('/api/fuel-log');
+    const data = await resp.json();
+    if (!resp.ok) { showError(data.error || `HTTPエラー: ${resp.status}`); return; }
+    records = data;
+  } catch(e) {
+    showError(`ネットワークエラー: ${e.message}\n\nサーバーが起動しているか確認してください。`);
+    return;
+  }
+
+  loading.style.display = 'none';
+  btn.disabled = false;
+
+  if (!records.length) {
+    showError('データが0件でした。Notionのプロパティ名や統合の設定を確認してください。');
+    return;
+  }
+
+  render(records);
+
+  function showError(msg) {
+    loading.style.display = 'none';
+    btn.disabled = false;
+    errBox.style.display = 'block';
+    document.getElementById('error-detail').textContent = msg;
+  }
+}
+
+function render(records) {
+  // /api/fuel-log は { date, distance, fuel, kmpl } の配列を想定
+  // kmpl がない場合は計算
+  records = records.map(r => ({
+    ...r,
+    kmpl: r.kmpl ?? +(r.distance / r.fuel).toFixed(2)
+  }));
+
+  const kmplArr = records.map(r => r.kmpl);
+  const avg     = (kmplArr.reduce((a,b)=>a+b,0)/kmplArr.length).toFixed(2);
+  const best    = Math.max(...kmplArr).toFixed(2);
+  const worst   = Math.min(...kmplArr).toFixed(2);
+  const totalKm = records.reduce((a,r)=>a+r.distance,0).toFixed(1);
+  const totalL  = records.reduce((a,r)=>a+r.fuel,0).toFixed(2);
+
+  document.getElementById('s-avg').textContent   = avg;
+  document.getElementById('s-best').textContent  = best;
+  document.getElementById('s-worst').textContent = worst;
+  document.getElementById('s-dist').textContent  = Number(totalKm).toLocaleString();
+  document.getElementById('s-fuel').textContent  = Number(totalL).toLocaleString();
+  document.getElementById('s-count').textContent = records.length;
+  document.getElementById('header-sub').textContent =
+    `${records[0].date} 〜 ${records[records.length-1].date}  |  ${records.length} records`;
+  document.getElementById('last-updated').textContent =
+    `最終取得: ${new Date().toLocaleString('ja-JP')}`;
+
+  const labels  = records.map(r => r.date);
+  const avgLine = Array(records.length).fill(parseFloat(avg));
+
+  if(chart1) chart1.destroy();
+  if(chart2) chart2.destroy();
+
+  // ── 燃費推移 ──
+  chart1 = new Chart(document.getElementById('chart-fuel').getContext('2d'), {
+    type:'line',
+    data:{ labels, datasets:[
+      { label:'燃費 (km/L)', data:kmplArr,
+        borderColor:'#e8a838', backgroundColor:'rgba(232,168,56,0.12)',
+        fill:true, tension:0.35, pointRadius:4, pointBackgroundColor:'#e8a838',
+        pointHoverRadius:6, borderWidth:2 },
+      { label:`平均 ${avg} km/L`, data:avgLine,
+        borderColor:'#4fc3f7', borderDash:[6,4], borderWidth:1.5, pointRadius:0, fill:false }
+    ]},
+    options:{
+      responsive:true, interaction:{mode:'index',intersect:false},
+      plugins:{
+        legend:LEGEND, tooltip:{
+          ...TOOLTIP,
+          callbacks:{
+            afterBody(items) {
+              const r = records[items[0].dataIndex];
+              return [`給油量: ${r.fuel} L`, `走行距離: ${r.distance} km`];
+            }
+          }
+        }
+      },
+      scales:{
+        x:{ ticks:{color:'#7d8590',maxRotation:45,font:{size:10}}, grid:{color:'#1c2330'} },
+        y:{ ticks:{color:'#7d8590'}, grid:{color:'#1c2330'}, title:{display:true,text:'km/L',color:'#7d8590'}, beginAtZero:false }
+      }
+    }
+  });
+
+  // ── 給油量 / 走行距離 複合 ──
+  chart2 = new Chart(document.getElementById('chart-dual').getContext('2d'), {
+    type:'bar',
+    data:{ labels, datasets:[
+      { label:'走行距離 (km)', data:records.map(r=>r.distance),
+        backgroundColor:'rgba(79,195,247,0.25)', borderColor:'#4fc3f7', borderWidth:1, yAxisID:'y1' },
+      { label:'給油量 (L)', data:records.map(r=>r.fuel),
+        type:'line', borderColor:'#81c784', backgroundColor:'rgba(129,199,132,0.1)',
+        fill:false, tension:0.35, pointRadius:3, borderWidth:2, yAxisID:'y2' }
+    ]},
+    options:{
+      responsive:true, interaction:{mode:'index',intersect:false},
+      plugins:{ legend:LEGEND, tooltip:TOOLTIP },
+      scales:{
+        x:{ ticks:{color:'#7d8590',maxRotation:45,font:{size:10}}, grid:{color:'#1c2330'} },
+        y1:{ position:'left',  ticks:{color:'#4fc3f7',font:{size:10}}, grid:{color:'#1c2330'}, title:{display:true,text:'km',color:'#4fc3f7'} },
+        y2:{ position:'right', ticks:{color:'#81c784',font:{size:10}}, grid:{drawOnChartArea:false}, title:{display:true,text:'L',color:'#81c784'} }
+      }
+    }
+  });
+
+  // ── 月別平均 ──
+  const monthly = {};
+  records.forEach(r => {
+    const key = r.date.slice(0,7);
+    if(!monthly[key]) monthly[key]=[];
+    monthly[key].push(r.kmpl);
+  });
+  const mAvgs = Object.entries(monthly).map(([k,v])=>({ month:k, avg:+(v.reduce((a,b)=>a+b,0)/v.length).toFixed(2) }));
+  const maxA  = Math.max(...mAvgs.map(m=>m.avg));
+  const grid  = document.getElementById('monthly-grid');
+  grid.innerHTML='';
+  mAvgs.forEach(m=>{
+    grid.innerHTML+=`
+      <div class="month-item">
+        <div class="month-name">${m.month}</div>
+        <div class="month-val">${m.avg}</div>
+        <div class="kpi-unit" style="font-size:.65rem">km/L</div>
+        <div class="bar-bg"><div class="bar-fill" style="width:${((m.avg/maxA)*100).toFixed(1)}%"></div></div>
+      </div>`;
+  });
+
+  // ── テーブル ──
+  const tbody = document.getElementById('table-body');
+  tbody.innerHTML='';
+  const bestVal  = parseFloat(best);
+  const worstVal = parseFloat(worst);
+  [...records].reverse().forEach(r => {
+    const cls = r.kmpl===bestVal ? 'hi' : r.kmpl===worstVal ? 'lo' : '';
+    tbody.innerHTML+=`
+      <tr>
+        <td>${r.date}</td>
+        <td>${r.distance.toLocaleString()}</td>
+        <td>${r.fuel}</td>
+        <td class="${cls}">${r.kmpl}</td>
+      </tr>`;
+  });
+
+  document.getElementById('dashboard').classList.add('visible');
+}
+
+// 初回ロード
+loadData();
+</script>
+</body>
+</html>
