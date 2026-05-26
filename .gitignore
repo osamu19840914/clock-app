@@ -23,5 +23,5 @@ fuel_log/*
 !fuel_log/run.sh
 !fuel_log/api/
 fuel_log/api/*
-!fuel_log/api/fuel-log.py
-!fuel_log/api/debug.py
+!fuel_log/api/fuel-log.js
+!fuel_log/api/debug.js
