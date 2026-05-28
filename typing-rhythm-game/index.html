@@ -73,21 +73,22 @@ let nextBeatT = 0, beatIdx = 0;
 const BPM = 128;
 const BEAT = 60 / BPM;
 
-function initAudio() {
-  if (AC) return;
-  AC = new (window.AudioContext || window.webkitAudioContext)();
-  masterGain = AC.createGain();
-  masterGain.gain.value = 0.55;
-  masterGain.connect(AC.destination);
-}
-
-function unlockAudio() {
-  if (!AC) return;
-  if (AC.state === 'suspended') AC.resume();
-  // iOS silent buffer trick
-  const buf = AC.createBuffer(1, 1, 22050);
-  const src = AC.createBufferSource();
-  src.buffer = buf; src.connect(AC.destination); src.start(0);
+// iOS では AudioContext は suspended で生成される。
+// resume() の Promise を await してから音を出さないと無音になる。
+async function resumeAudio() {
+  if (!AC) {
+    AC = new (window.AudioContext || window.webkitAudioContext)();
+    masterGain = AC.createGain();
+    masterGain.gain.value = 0.55;
+    masterGain.connect(AC.destination);
+  }
+  if (AC.state !== 'running') await AC.resume();
+  // iOS 向けサイレントバッファでコンテキストを完全にアンロック
+  try {
+    const b = AC.createBuffer(1, 1, AC.sampleRate);
+    const s = AC.createBufferSource();
+    s.buffer = b; s.connect(AC.destination); s.start(0);
+  } catch (_) {}
 }
 
 function mkNoise(dur, hp) {
@@ -459,10 +460,10 @@ function drawResult() {
 }
 
 // ===== GAME LOGIC =====
+// resumeAudio() を await してから呼ぶこと
 function startGame() {
-  initAudio(); unlockAudio();
-  nextBeatT = AC.currentTime + 0.18; beatIdx = 0;
-  gameStart = performance.now() + 180; curBeat = 0;
+  nextBeatT = AC.currentTime + 0.4; beatIdx = 0;
+  gameStart = performance.now() + 400; curBeat = 0;
   notes = SONG.map(([beat, letter]) => new Note(beat, letter));
   sparks = []; floats = [];
   score = 0; combo = 0; maxCombo = 0;
@@ -513,33 +514,37 @@ function getKeyAt(x, y) {
   return null;
 }
 
-canvas.addEventListener('touchstart', e => {
-  e.preventDefault();
-  initAudio(); unlockAudio();
-  for (const t of e.changedTouches) {
-    const { x, y } = canvasXY(t.clientX, t.clientY);
-    if (state !== 'playing') { startGame(); break; }
-    const letter = getKeyAt(x, y);
-    if (letter) onLetter(letter);
+canvas.addEventListener('touchstart', async (e) => {
+  e.preventDefault(); // 同期で呼ぶ必要あり
+  if (state !== 'playing') {
+    await resumeAudio(); // ← ここで await することで iOS の音声ロックを解除
+    startGame();
+  } else {
+    // playing 中は先に入力処理、audio は既に running のはず
+    for (const t of e.changedTouches) {
+      const { x, y } = canvasXY(t.clientX, t.clientY);
+      const letter = getKeyAt(x, y);
+      if (letter) onLetter(letter);
+    }
   }
 }, { passive: false });
 
 canvas.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
 
 // ===== KEYBOARD INPUT =====
-document.addEventListener('keydown', e => {
+document.addEventListener('keydown', async (e) => {
   if (e.repeat) return;
   if (e.key === 'Enter' || e.key === ' ') {
-    if (state !== 'playing') { initAudio(); startGame(); }
+    if (state !== 'playing') { await resumeAudio(); startGame(); }
     return;
   }
   if (/^[a-zA-Z]$/.test(e.key)) {
-    if (state !== 'playing') { initAudio(); startGame(); return; }
+    if (state !== 'playing') { await resumeAudio(); startGame(); return; }
     onLetter(e.key.toUpperCase());
   }
 });
-canvas.addEventListener('click', () => {
-  if (state !== 'playing') { initAudio(); startGame(); }
+canvas.addEventListener('click', async () => {
+  if (state !== 'playing') { await resumeAudio(); startGame(); }
 });
 
 // ===== MAIN LOOP =====
