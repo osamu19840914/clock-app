@@ -83,9 +83,10 @@ function unlockAudio() {
     masterGain.gain.value = 0.55;
     masterGain.connect(AC.destination);
   }
-  AC.resume(); // 同期呼び出しでロック解除（Promise は無視してよい）
+  AC.resume();
   try {
-    const b = AC.createBuffer(1, 1, AC.sampleRate);
+    // 1サンプルでは iOS が無視することがある → 4096サンプルで確実にトリガー
+    const b = AC.createBuffer(1, 4096, AC.sampleRate);
     const s = AC.createBufferSource();
     s.buffer = b; s.connect(AC.destination); s.start(0);
   } catch (_) {}
@@ -522,10 +523,10 @@ function getKeyAt(x, y) {
 
 canvas.addEventListener('touchstart', (e) => {
   e.preventDefault();
-  unlockAudio(); // 同期でジェスチャー文脈内に呼ぶ（iOS 必須）
+  unlockAudio(); // 同期でジェスチャー文脈内 (iOS必須)
   if (state !== 'playing') {
-    // AC が起動するまで少し待ってからゲーム開始
-    setTimeout(() => startGame(), 80);
+    // .then() で AC が 'running' になってから確実に開始
+    AC.resume().then(() => { if (state !== 'playing') startGame(); });
   } else {
     for (const t of e.changedTouches) {
       const { x, y } = canvasXY(t.clientX, t.clientY);
@@ -541,16 +542,16 @@ canvas.addEventListener('touchmove', e => e.preventDefault(), { passive: false }
 document.addEventListener('keydown', (e) => {
   if (e.repeat) return;
   if (e.key === 'Enter' || e.key === ' ') {
-    if (state !== 'playing') { unlockAudio(); setTimeout(() => startGame(), 80); }
+    if (state !== 'playing') { unlockAudio(); AC.resume().then(() => { if (state !== 'playing') startGame(); }); }
     return;
   }
   if (/^[a-zA-Z]$/.test(e.key)) {
-    if (state !== 'playing') { unlockAudio(); setTimeout(() => startGame(), 80); return; }
+    if (state !== 'playing') { unlockAudio(); AC.resume().then(() => { if (state !== 'playing') startGame(); }); return; }
     onLetter(e.key.toUpperCase());
   }
 });
 canvas.addEventListener('click', () => {
-  if (state !== 'playing') { unlockAudio(); setTimeout(() => startGame(), 80); }
+  if (state !== 'playing') { unlockAudio(); AC.resume().then(() => { if (state !== 'playing') startGame(); }); }
 });
 
 // ===== MAIN LOOP =====
@@ -563,8 +564,8 @@ function frame(now) {
 
   drawBG();
 
-  if (state === 'title') { drawTitle(); return; }
-  if (state === 'result') { drawResult(); return; }
+  if (state === 'title') { drawTitle(); drawDebug(); return; }
+  if (state === 'result') { drawResult(); drawDebug(); return; }
 
   schedBeats();
   // AC.currentTime 基準で curBeat を計算 → audio と visual が完全同期
@@ -594,10 +595,22 @@ function frame(now) {
 
   drawKeyboard();
   drawHUD();
+  drawDebug();
 
   if (notes.every(n => n.hit || n.missed) && curBeat > LAST_BEAT + 3.5) {
     state = 'result';
   }
+}
+
+function drawDebug() {
+  const s = AC ? AC.state : 'none';
+  const ok = s === 'running';
+  ctx.save();
+  ctx.font = 'bold 13px monospace';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+  ctx.fillStyle = ok ? 'rgba(0,220,80,0.7)' : 'rgba(255,80,80,0.9)';
+  ctx.fillText('♪ AC:' + s, 8, LH - 6);
+  ctx.restore();
 }
 
 requestAnimationFrame(frame);
