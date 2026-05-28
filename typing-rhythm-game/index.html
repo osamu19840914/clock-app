@@ -80,7 +80,16 @@ const BEAT = 60 / BPM;
 function unlockAudio() {
   if (!AC) {
     AC = new (window.AudioContext || window.webkitAudioContext)();
-    // masterGain は AC が running になってから作る（iOS bug 回避）
+    // iOS Ring/Silentスイッチ回避:
+    // HTMLAudioElement.play() をジェスチャー内で呼ぶと、
+    // AudioSessionがAmbient→Playbackに切り替わりサイレントスイッチを無視するようになる
+    try {
+      const ua = new Audio();
+      // 44バイトの空WAV（無音）
+      ua.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+      ua.volume = 0.001;
+      ua.play().catch(() => {});
+    } catch(_) {}
   }
   AC.resume();
   try {
@@ -469,7 +478,7 @@ let gameStartAudioTime = 0; // この audio 時刻が beat 0
 function startGame() {
   if (masterGain) { try { masterGain.disconnect(); } catch(_) {} }
   masterGain = AC.createGain();
-  masterGain.gain.value = 0.55;
+  masterGain.gain.value = 1.0;
   masterGain.connect(AC.destination);
 
   // AC.destination に直結のテストビープ（masterGain を経由しない）
