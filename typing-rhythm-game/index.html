@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>タイピング音ゲー</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+body { background: #050510; overflow: hidden; touch-action: none; }
+canvas { display: block; touch-action: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+'use strict';
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const IS_TOUCH = 'ontouchstart' in window;
+
+// ===== RESIZE (DPR-aware) =====
+let DPR = 1;
+let LW = 0, LH = 0; // logical (CSS) dimensions
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 3);
+  LW = window.innerWidth;
+  LH = window.innerHeight;
+  canvas.style.width  = LW + 'px';
+  canvas.style.height = LH + 'px';
+  canvas.width  = Math.round(LW * DPR);
+  canvas.height = Math.round(LH * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  initLayout();
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 200));
+
+// ===== LAYOUT =====
+let L = {};
+function initLayout() {
+  const maxKs = IS_TOUCH ? 68 : 50;
+  const ks = Math.min(maxKs, Math.floor((LW - 40) / 11));
+  const kg = Math.max(4, Math.floor(ks * 0.1));
+  const rows = ['QWERTYUIOP', 'ASDFGHJKL', 'ZXCVBNM'];
+  const rowOff = [0, 0.5, 1.5];
+  const kbPad = Math.max(16, (window.screen && window.visualViewport ? window.visualViewport.offsetTop : 0) + 16);
+  const kbH = rows.length * (ks + kg) - kg;
+  const kbTop = LH - kbPad - kbH;
+  const judgeY = kbTop - 36;
+
+  const kp = {};
+  rows.forEach((row, r) => {
+    const rw = row.length * (ks + kg) - kg;
+    const rx = (LW - rw) / 2 + rowOff[r] * (ks + kg);
+    for (let i = 0; i < row.length; i++) {
+      kp[row[i]] = {
+        x: rx + i * (ks + kg) + ks / 2,
+        y: kbTop + r * (ks + kg) + ks / 2,
+      };
+    }
+  });
+
+  L = { ks, kg, rows, kbTop, judgeY, kp };
+}
+
+resize();
+
+// ===== AUDIO =====
+let AC = null, masterGain = null;
+let nextBeatT = 0, beatIdx = 0;
+const BPM = 128;
+const BEAT = 60 / BPM;
+
+function initAudio() {
+  if (AC) return;
+  AC = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = AC.createGain();
+  masterGain.gain.value = 0.55;
+  masterGain.connect(AC.destination);
+}
+
+function unlockAudio() {
+  if (!AC) return;
+  if (AC.state === 'suspended') AC.resume();
+  // iOS silent buffer trick
+  const buf = AC.createBuffer(1, 1, 22050);
+  const src = AC.createBufferSource();
+  src.buffer = buf; src.connect(AC.destination); src.start(0);
+}
+
+function mkNoise(dur, hp) {
+  const n = Math.ceil(AC.sampleRate * dur);
+  const buf = AC.createBuffer(1, n, AC.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+  const src = AC.createBufferSource(); src.buffer = buf;
+  const f = AC.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+  const env = AC.createGain();
+  src.connect(f); f.connect(env); env.connect(masterGain);
+  return { src, env };
+}
+
+function kick(t) {
+  const o = AC.createOscillator(), e = AC.createGain();
+  o.frequency.setValueAtTime(190, t);
+  o.frequency.exponentialRampToValueAtTime(35, t + 0.28);
+  e.gain.setValueAtTime(1.6, t); e.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+  o.connect(e); e.connect(masterGain); o.start(t); o.stop(t + 0.3);
+}
+function snare(t) {
+  const { src, env } = mkNoise(0.14, 1200);
+  env.gain.setValueAtTime(0.45, t); env.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+  src.start(t);
+  const o = AC.createOscillator(), e2 = AC.createGain();
+  o.frequency.value = 190; e2.gain.setValueAtTime(0.3, t); e2.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+  o.connect(e2); e2.connect(masterGain); o.start(t); o.stop(t + 0.1);
+}
+function hat(t, v = 0.12) {
+  const { src, env } = mkNoise(0.045, 9000);
+  env.gain.setValueAtTime(v, t); env.gain.exponentialRampToValueAtTime(0.001, t + 0.045);
+  src.start(t);
+}
+const BASSLINE = [110, 0, 110, 0, 98, 0, 98, 0];
+function bass(t, freq) {
+  const o = AC.createOscillator(), lpf = AC.createBiquadFilter(), e = AC.createGain();
+  o.type = 'sawtooth'; o.frequency.value = freq;
+  lpf.type = 'lowpass'; lpf.frequency.value = 280;
+  e.gain.setValueAtTime(0.5, t); e.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+  o.connect(lpf); lpf.connect(e); e.connect(masterGain); o.start(t); o.stop(t + 0.25);
+}
+function schedBeats() {
+  if (!AC) return;
+  while (nextBeatT < AC.currentTime + 0.15) {
+    const q = beatIdx % 4;
+    if (q === 0 || q === 2) kick(nextBeatT);
+    if (q === 1 || q === 3) snare(nextBeatT);
+    hat(nextBeatT, q === 0 ? 0.18 : 0.1);
+    hat(nextBeatT + BEAT * 0.5, 0.07);
+    const bf = BASSLINE[beatIdx % 8]; if (bf) bass(nextBeatT, bf);
+    nextBeatT += BEAT; beatIdx++;
+  }
+}
+function hitSnd(q) {
+  if (!AC) return;
+  const t = AC.currentTime;
+  const o = AC.createOscillator(), e = AC.createGain();
+  o.connect(e); e.connect(masterGain);
+  if (q === 'perfect') {
+    o.type = 'sine';
+    o.frequency.setValueAtTime(880, t); o.frequency.setValueAtTime(1320, t + 0.06);
+    e.gain.setValueAtTime(0.28, t); e.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+  } else if (q === 'good') {
+    o.type = 'sine'; o.frequency.value = 660;
+    e.gain.setValueAtTime(0.2, t); e.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+  } else {
+    o.type = 'square';
+    o.frequency.setValueAtTime(200, t); o.frequency.exponentialRampToValueAtTime(80, t + 0.1);
+    e.gain.setValueAtTime(0.12, t); e.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+  }
+  o.start(t); o.stop(t + 0.25);
+}
+
+// ===== SONG =====
+const SONG = [
+  [0,'A'],[1,'S'],[2,'D'],[3,'F'],
+  [4,'J'],[5,'K'],[6,'L'],[7,'A'],
+  [8,'S'],[9,'D'],[10,'F'],[11,'G'],
+  [12,'H'],[13,'J'],[14,'K'],[15,'L'],
+  [16,'Q'],[17,'W'],[18,'E'],[19,'R'],
+  [20,'T'],[21,'Y'],[22,'U'],[23,'I'],
+  [24,'O'],[25,'P'],[26,'Q'],[27,'W'],
+  [28,'E'],[29,'R'],[30,'T'],[31,'Y'],
+  [32,'Z'],[33,'X'],[34,'C'],[35,'V'],
+  [36,'B'],[37,'N'],[38,'M'],[39,'Z'],
+  [40,'X'],[41,'C'],[42,'V'],[43,'B'],
+  [44,'N'],[45,'M'],[46,'L'],[47,'K'],
+  [48,'E'],[48.5,'T'],[49,'A'],[49.5,'O'],
+  [50,'I'],[50.5,'N'],[51,'S'],[51.5,'H'],
+  [52,'R'],[52.5,'D'],[53,'L'],[53.5,'C'],
+  [54,'U'],[54.5,'M'],[55,'W'],[55.5,'F'],
+  [56,'G'],[56.5,'Y'],[57,'P'],[57.5,'B'],
+  [58,'V'],[58.5,'K'],[59,'J'],[59.5,'X'],
+  [60,'Q'],[60.5,'A'],[61,'Z'],
+  [61.5,'W'],[62,'S'],[62.5,'X'],
+  [63,'E'],[63.5,'D'],[64,'C'],
+  [64.5,'R'],[65,'F'],[65.5,'V'],
+  [66,'T'],[66.5,'G'],[67,'B'],
+  [67.5,'Y'],[68,'H'],[68.5,'N'],
+  [69,'U'],[69.5,'J'],[70,'M'],
+  [70.5,'I'],[71,'K'],[71.5,'O'],
+  [72,'L'],[72.5,'P'],
+];
+const LAST_BEAT = SONG[SONG.length - 1][0];
+const NOTE_TRAVEL = 3.2;
+const PERFECT_MS = 58;
+const GOOD_MS = 125;
+
+// ===== NOTE =====
+class Note {
+  constructor(beat, letter) {
+    this.beat = beat; this.letter = letter;
+    this.hit = false; this.missed = false;
+    this.alpha = 1; this.scale = 1;
+  }
+  x() { return (L.kp[this.letter] || { x: LW / 2 }).x; }
+  y(cb) {
+    const prog = (cb - (this.beat - NOTE_TRAVEL)) / NOTE_TRAVEL;
+    return -L.ks * 0.5 + (L.judgeY + L.ks * 0.5) * prog;
+  }
+  offsetMs(cb) { return (cb - this.beat) * BEAT * 1000; }
+  inZone(cb) { return Math.abs(this.offsetMs(cb)) < GOOD_MS + 35; }
+  past(cb) { return this.offsetMs(cb) > GOOD_MS + 35; }
+  update(dt) { if (this.hit) { this.alpha -= dt * 5; this.scale += dt * 5; } }
+  draw(cb) {
+    if (this.missed) return;
+    if (this.hit && this.alpha <= 0) return;
+    const x = this.x(), y = this.y(cb);
+    if (y < -L.ks) return;
+    const r = L.ks * 0.46;
+    ctx.save();
+    ctx.globalAlpha = this.hit ? Math.max(0, this.alpha) : 1;
+    ctx.translate(x, y);
+    ctx.scale(this.hit ? this.scale : 1, this.hit ? this.scale : 1);
+    const gr = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 2.2);
+    gr.addColorStop(0, 'rgba(80,160,255,0.45)'); gr.addColorStop(1, 'rgba(80,160,255,0)');
+    ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(0, 0, r * 2.2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fillStyle = '#0c1d3f'; ctx.fill();
+    ctx.strokeStyle = '#3d88ff'; ctx.lineWidth = 2.5; ctx.stroke();
+    ctx.fillStyle = 'white';
+    ctx.font = `bold ${r * 1.05}px 'Courier New',monospace`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(this.letter, 0, 0);
+    ctx.restore();
+  }
+}
+
+// ===== PARTICLES =====
+class Spark {
+  constructor(x, y, color) {
+    this.x = x; this.y = y; this.color = color;
+    this.vx = (Math.random() - 0.5) * 9; this.vy = Math.random() * -8 - 2;
+    this.life = 1; this.r = Math.random() * 3 + 1.5;
+  }
+  update(dt) { this.x += this.vx; this.y += this.vy; this.vy += 14 * dt; this.life -= dt * 2.8; }
+  draw() {
+    if (this.life <= 0) return;
+    ctx.save(); ctx.globalAlpha = Math.max(0, this.life);
+    ctx.fillStyle = this.color; ctx.beginPath();
+    ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+  }
+}
+class FloatText {
+  constructor(text, color, x, y) {
+    this.text = text; this.color = color; this.x = x; this.y = y;
+    this.life = 1; this.vy = -1.6;
+  }
+  update(dt) { this.life -= dt * 2.4; this.y += this.vy; }
+  draw() {
+    if (this.life <= 0) return;
+    ctx.save(); ctx.globalAlpha = Math.max(0, this.life);
+    ctx.fillStyle = this.color; ctx.shadowColor = this.color; ctx.shadowBlur = 8;
+    ctx.font = `bold ${L.ks * 0.62}px 'Courier New',monospace`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(this.text, this.x, this.y); ctx.restore();
+  }
+}
+
+// ===== STATE =====
+let state = 'title';
+let gameStart = 0, curBeat = 0;
+let score = 0, combo = 0, maxCombo = 0;
+let counts = { perfect: 0, good: 0, miss: 0 };
+let notes = [], sparks = [], floats = [];
+let keyState = {};
+let bigText = '', bigColor = '#fff', bigTimer = 0;
+let pulse = 0;
+
+// ===== DRAW HELPERS =====
+function roundRect(x, y, w, h, r) {
+  if (ctx.roundRect) {
+    ctx.roundRect(x, y, w, h, r);
+  } else {
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y); ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+}
+
+function drawBG() {
+  ctx.fillStyle = '#050510';
+  ctx.fillRect(0, 0, LW, LH);
+  ctx.strokeStyle = 'rgba(70,70,160,0.04)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x < LW; x += 40) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, LH); ctx.stroke();
+  }
+  if (state === 'playing') {
+    for (const [letter, pos] of Object.entries(L.kp)) {
+      const ks = keyState[letter];
+      if (ks && ks.timer > 0) {
+        const gr = ctx.createLinearGradient(pos.x, 0, pos.x, L.judgeY);
+        const c = ks.glow || '#4488ff';
+        gr.addColorStop(0, c + '00');
+        gr.addColorStop(1, c + Math.floor(ks.timer * 0x33).toString(16).padStart(2, '0'));
+        ctx.fillStyle = gr;
+        ctx.fillRect(pos.x - L.ks * 0.5, 0, L.ks, L.judgeY);
+      }
+    }
+  }
+}
+
+function drawJudgeLine() {
+  const y = L.judgeY;
+  ctx.save();
+  ctx.shadowColor = `rgba(100,200,255,${0.3 + pulse * 0.7})`;
+  ctx.shadowBlur = 12 + pulse * 18;
+  ctx.strokeStyle = `rgba(100,200,255,${0.4 + pulse * 0.6})`;
+  ctx.lineWidth = 2 + pulse * 1.5;
+  ctx.beginPath(); ctx.moveTo(12, y); ctx.lineTo(LW - 12, y); ctx.stroke();
+  for (const ex of [12, LW - 12]) {
+    ctx.fillStyle = `rgba(100,200,255,${0.7 + pulse * 0.3})`;
+    ctx.beginPath();
+    ctx.moveTo(ex, y - 7); ctx.lineTo(ex + 7, y);
+    ctx.lineTo(ex, y + 7); ctx.lineTo(ex - 7, y);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawKeyboard() {
+  const { ks, rows, kp } = L;
+  rows.forEach(row => {
+    for (const letter of row) {
+      const { x, y } = kp[letter];
+      const kst = keyState[letter];
+      const lit = kst && kst.timer > 0;
+      const kx = x - ks / 2, ky = y - ks / 2;
+      ctx.save();
+      if (lit && kst.glow) { ctx.shadowColor = kst.glow; ctx.shadowBlur = 18; }
+      ctx.fillStyle = lit ? 'rgba(60,130,255,0.28)' : 'rgba(16,20,48,0.85)';
+      ctx.strokeStyle = lit ? (kst.glow || '#3d88ff') : 'rgba(60,80,160,0.38)';
+      ctx.lineWidth = lit ? 2 : 1;
+      ctx.beginPath(); roundRect(kx, ky, ks, ks, 6); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = lit ? 'white' : 'rgba(130,155,210,0.65)';
+      ctx.font = `${ks * 0.38}px 'Courier New',monospace`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(letter, x, y);
+      ctx.restore();
+      if (kst) kst.timer = Math.max(0, kst.timer - 0.025);
+    }
+  });
+}
+
+function drawHUD() {
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.font = `bold ${Math.min(28, LW / 22)}px 'Courier New',monospace`;
+  ctx.textAlign = 'right'; ctx.textBaseline = 'top';
+  ctx.fillText(score.toString().padStart(7, '0'), LW - 14, 14);
+  ctx.fillStyle = 'rgba(110,140,215,0.6)';
+  ctx.font = `11px 'Courier New',monospace`;
+  ctx.fillText('SCORE', LW - 14, 46);
+
+  if (combo > 1) {
+    ctx.textAlign = 'left';
+    ctx.fillStyle = `rgba(255,215,40,${Math.min(1, combo * 0.12 + 0.3)})`;
+    ctx.font = `bold ${Math.min(22 + combo, 44)}px 'Courier New',monospace`;
+    ctx.textBaseline = 'top';
+    ctx.fillText(`${combo}x`, 14, 14);
+  }
+
+  if (bigTimer > 0) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, bigTimer * 2.5);
+    ctx.fillStyle = bigColor; ctx.shadowColor = bigColor; ctx.shadowBlur = 25;
+    ctx.font = `bold ${Math.min(54, LW / 10)}px 'Courier New',monospace`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(bigText, LW / 2, L.judgeY - 70);
+    ctx.restore();
+    bigTimer -= 0.02;
+  }
+
+  const prog = Math.min(1, curBeat / (LAST_BEAT + 4));
+  const bw = LW * 0.42, bx = (LW - bw) / 2;
+  ctx.fillStyle = 'rgba(255,255,255,0.07)';
+  ctx.fillRect(bx, 14, bw, 4);
+  ctx.fillStyle = 'rgba(90,190,255,0.75)';
+  ctx.fillRect(bx, 14, bw * prog, 4);
+}
+
+function drawTitle() {
+  const cx = LW / 2, cy = LH * 0.28;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+  ctx.fillStyle = '#3a7fff'; ctx.shadowColor = '#3a7fff'; ctx.shadowBlur = 40;
+  ctx.font = `bold ${Math.min(52, LW / 12)}px 'Courier New',monospace`;
+  ctx.fillText('TYPING RHYTHM', cx, cy - 36);
+
+  ctx.fillStyle = '#aaccff'; ctx.shadowColor = '#aaccff'; ctx.shadowBlur = 20;
+  ctx.font = `bold ${Math.min(34, LW / 18)}px 'Courier New',monospace`;
+  ctx.fillText('タイピング音ゲー', cx, cy + 16);
+
+  ctx.shadowBlur = 0;
+
+  // START button
+  const bw = Math.min(280, LW * 0.55), bh = 52, bx = cx - bw / 2, by = cy + 55;
+  ctx.fillStyle = 'rgba(50,120,255,0.25)';
+  ctx.strokeStyle = '#3a7fff'; ctx.lineWidth = 2;
+  ctx.beginPath(); roundRect(bx, by, bw, bh, 10); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'white';
+  ctx.font = `bold ${Math.min(20, LW / 30)}px 'Courier New',monospace`;
+  ctx.fillText(IS_TOUCH ? 'タップしてスタート' : 'Enter / クリックでスタート', cx, by + bh / 2);
+
+  ctx.fillStyle = 'rgba(140,170,240,0.5)';
+  ctx.font = `${Math.min(13, LW / 52)}px 'Courier New',monospace`;
+  ctx.fillText('音符が判定ラインに来たら同じキーを押せ！', cx, cy + 126);
+
+  drawKeyboard();
+}
+
+function drawResult() {
+  const cx = LW / 2, cy = LH * 0.36;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+  ctx.fillStyle = '#ffd700'; ctx.shadowColor = '#ffd700'; ctx.shadowBlur = 30;
+  ctx.font = `bold ${Math.min(50, LW / 12)}px 'Courier New',monospace`;
+  ctx.fillText('RESULT', cx, cy - 100);
+  ctx.shadowBlur = 0;
+
+  const total = counts.perfect + counts.good + counts.miss;
+  const acc = total > 0 ? ((counts.perfect + counts.good * 0.5) / total * 100).toFixed(1) : '0.0';
+
+  const rows = [
+    [`SCORE   ${score.toString().padStart(7, '0')}`, 'white'],
+    [`MAX COMBO   ${maxCombo}`, '#88bbff'],
+    [`PERFECT   ${counts.perfect}`, '#ffd700'],
+    [`GOOD      ${counts.good}`, '#00ff88'],
+    [`MISS      ${counts.miss}`, '#ff5555'],
+    [`ACCURACY  ${acc}%`, '#ffaaff'],
+  ];
+  rows.forEach(([text, color], i) => {
+    ctx.fillStyle = color;
+    ctx.font = `bold ${Math.min(22, LW / 30)}px 'Courier New',monospace`;
+    ctx.fillText(text, cx, cy - 30 + i * 42);
+  });
+
+  const bw = Math.min(280, LW * 0.55), bh = 50, bx = cx - bw / 2, by = cy + 228;
+  ctx.fillStyle = 'rgba(50,120,255,0.2)';
+  ctx.strokeStyle = 'rgba(80,140,255,0.6)'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); roundRect(bx, by, bw, bh, 10); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.font = `${Math.min(17, LW / 36)}px 'Courier New',monospace`;
+  ctx.fillText(IS_TOUCH ? 'タップしてリトライ' : 'Enter / クリックでリトライ', cx, by + bh / 2);
+}
+
+// ===== GAME LOGIC =====
+function startGame() {
+  initAudio(); unlockAudio();
+  nextBeatT = AC.currentTime + 0.18; beatIdx = 0;
+  gameStart = performance.now() + 180; curBeat = 0;
+  notes = SONG.map(([beat, letter]) => new Note(beat, letter));
+  sparks = []; floats = [];
+  score = 0; combo = 0; maxCombo = 0;
+  counts = { perfect: 0, good: 0, miss: 0 };
+  keyState = {}; bigTimer = 0;
+  state = 'playing';
+}
+
+function onLetter(letter) {
+  keyState[letter] = { glow: '#3d88ff', timer: 1 };
+  let best = null, bestD = Infinity;
+  for (const n of notes) {
+    if (n.hit || n.missed || n.letter !== letter) continue;
+    if (!n.inZone(curBeat)) continue;
+    const d = Math.abs(n.offsetMs(curBeat));
+    if (d < bestD) { bestD = d; best = n; }
+  }
+  if (!best) return;
+  best.hit = true;
+  combo++; if (combo > maxCombo) maxCombo = combo;
+  let q, pts, col;
+  if (bestD <= PERFECT_MS) {
+    q = 'PERFECT'; pts = 1000 + combo * 10; col = '#ffd700'; counts.perfect++;
+  } else {
+    q = 'GOOD'; pts = 500 + combo * 5; col = '#00ff88'; counts.good++;
+  }
+  score += pts; hitSnd(q.toLowerCase());
+  keyState[letter] = { glow: col, timer: 1 };
+  bigText = q; bigColor = col; bigTimer = 0.75;
+  floats.push(new FloatText(q, col, best.x(), L.judgeY - 18));
+  for (let i = 0; i < 12; i++) sparks.push(new Spark(best.x(), L.judgeY, col));
+}
+
+// ===== TOUCH INPUT =====
+function canvasXY(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (clientX - rect.left) * (LW / rect.width),
+    y: (clientY - rect.top) * (LH / rect.height),
+  };
+}
+
+function getKeyAt(x, y) {
+  const hit = L.ks * 0.68; // larger hit area than visual key
+  for (const [letter, pos] of Object.entries(L.kp)) {
+    if (Math.abs(x - pos.x) < hit && Math.abs(y - pos.y) < hit) return letter;
+  }
+  return null;
+}
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  initAudio(); unlockAudio();
+  for (const t of e.changedTouches) {
+    const { x, y } = canvasXY(t.clientX, t.clientY);
+    if (state !== 'playing') { startGame(); break; }
+    const letter = getKeyAt(x, y);
+    if (letter) onLetter(letter);
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+
+// ===== KEYBOARD INPUT =====
+document.addEventListener('keydown', e => {
+  if (e.repeat) return;
+  if (e.key === 'Enter' || e.key === ' ') {
+    if (state !== 'playing') { initAudio(); startGame(); }
+    return;
+  }
+  if (/^[a-zA-Z]$/.test(e.key)) {
+    if (state !== 'playing') { initAudio(); startGame(); return; }
+    onLetter(e.key.toUpperCase());
+  }
+});
+canvas.addEventListener('click', () => {
+  if (state !== 'playing') { initAudio(); startGame(); }
+});
+
+// ===== MAIN LOOP =====
+let lastT = 0;
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min((now - lastT) / 1000, 0.05);
+  lastT = now;
+
+  drawBG();
+
+  if (state === 'title') { drawTitle(); return; }
+  if (state === 'result') { drawResult(); return; }
+
+  schedBeats();
+  curBeat = Math.max(0, (now - gameStart) / (BEAT * 1000));
+
+  if (AC) {
+    const phase = ((AC.currentTime - (nextBeatT - BEAT)) / BEAT) % 1;
+    pulse = Math.max(0, 1 - ((phase + 1) % 1) * 5);
+  }
+
+  drawJudgeLine();
+
+  for (const n of notes) {
+    n.update(dt); n.draw(curBeat);
+    if (!n.hit && !n.missed && n.past(curBeat)) {
+      n.missed = true; combo = 0; counts.miss++;
+      hitSnd('miss');
+      bigText = 'MISS'; bigColor = '#ff5555'; bigTimer = 0.6;
+      keyState[n.letter] = { glow: '#ff5555', timer: 0.6 };
+    }
+  }
+
+  for (const s of sparks) { s.update(dt); s.draw(); }
+  for (const f of floats) { f.update(dt); f.draw(); }
+  sparks.splice(0, sparks.length, ...sparks.filter(s => s.life > 0));
+  floats.splice(0, floats.length, ...floats.filter(f => f.life > 0));
+
+  drawKeyboard();
+  drawHUD();
+
+  if (notes.every(n => n.hit || n.missed) && curBeat > LAST_BEAT + 3.5) {
+    state = 'result';
+  }
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

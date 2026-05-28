@@ -25,3 +25,6 @@ fuel_log/*
 fuel_log/api/*
 !fuel_log/api/fuel-log.js
 !fuel_log/api/debug.js
+
+!typing-rhythm-game/
+!typing-rhythm-game/index.html
