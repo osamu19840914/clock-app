@@ -79,13 +79,10 @@ const BEAT = 60 / BPM;
 function unlockAudio() {
   if (!AC) {
     AC = new (window.AudioContext || window.webkitAudioContext)();
-    masterGain = AC.createGain();
-    masterGain.gain.value = 0.55;
-    masterGain.connect(AC.destination);
+    // masterGain は AC が running になってから作る（iOS bug 回避）
   }
   AC.resume();
   try {
-    // 1サンプルでは iOS が無視することがある → 4096サンプルで確実にトリガー
     const b = AC.createBuffer(1, 4096, AC.sampleRate);
     const s = AC.createBufferSource();
     s.buffer = b; s.connect(AC.destination); s.start(0);
@@ -469,6 +466,12 @@ const AUDIO_LEAD = NOTE_TRAVEL * (60 / BPM); // 秒 = beats × BEAT_SEC
 let gameStartAudioTime = 0; // この audio 時刻が beat 0
 
 function startGame() {
+  // AC が running になってから GainNode を作成（iOS では suspended 中に作ると無効になるバグあり）
+  if (masterGain) { try { masterGain.disconnect(); } catch(_) {} }
+  masterGain = AC.createGain();
+  masterGain.gain.value = 0.55;
+  masterGain.connect(AC.destination);
+
   gameStartAudioTime = AC.currentTime + AUDIO_LEAD;
   nextBeatT = gameStartAudioTime; beatIdx = 0;
   notes = SONG.map(([beat, letter]) => new Note(beat, letter));
@@ -604,12 +607,13 @@ function frame(now) {
 
 function drawDebug() {
   const s = AC ? AC.state : 'none';
+  const t = AC ? AC.currentTime.toFixed(1) : '--';
   const ok = s === 'running';
   ctx.save();
-  ctx.font = 'bold 13px monospace';
+  ctx.font = 'bold 12px monospace';
   ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
-  ctx.fillStyle = ok ? 'rgba(0,220,80,0.7)' : 'rgba(255,80,80,0.9)';
-  ctx.fillText('♪ AC:' + s, 8, LH - 6);
+  ctx.fillStyle = ok ? 'rgba(0,220,80,0.8)' : 'rgba(255,80,80,0.9)';
+  ctx.fillText(`AC:${s} t:${t} beat:${beatIdx}`, 8, LH - 6);
   ctx.restore();
 }
 
