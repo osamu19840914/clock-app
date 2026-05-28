@@ -74,16 +74,16 @@ const BPM = 128;
 const BEAT = 60 / BPM;
 
 // iOS では AudioContext は suspended で生成される。
-// resume() の Promise を await してから音を出さないと無音になる。
-async function resumeAudio() {
+// async/await を使うとジェスチャー文脈が切れてロック解除に失敗する。
+// → resume() とサイレントバッファは必ず同期的にユーザージェスチャー内で呼ぶ。
+function unlockAudio() {
   if (!AC) {
     AC = new (window.AudioContext || window.webkitAudioContext)();
     masterGain = AC.createGain();
     masterGain.gain.value = 0.55;
     masterGain.connect(AC.destination);
   }
-  if (AC.state !== 'running') await AC.resume();
-  // iOS 向けサイレントバッファでコンテキストを完全にアンロック
+  AC.resume(); // 同期呼び出しでロック解除（Promise は無視してよい）
   try {
     const b = AC.createBuffer(1, 1, AC.sampleRate);
     const s = AC.createBufferSource();
@@ -132,7 +132,9 @@ function bass(t, freq) {
   o.connect(lpf); lpf.connect(e); e.connect(masterGain); o.start(t); o.stop(t + 0.25);
 }
 function schedBeats() {
-  if (!AC) return;
+  if (!AC || AC.state !== 'running') return;
+  // 過去にズレた場合はリセット（iOS 起動遅延対策）
+  if (nextBeatT < AC.currentTime) nextBeatT = AC.currentTime + 0.05;
   while (nextBeatT < AC.currentTime + 0.15) {
     const q = beatIdx % 4;
     if (q === 0 || q === 2) kick(nextBeatT);
@@ -271,7 +273,7 @@ class FloatText {
 
 // ===== STATE =====
 let state = 'title';
-let gameStart = 0, curBeat = 0;
+let curBeat = 0;
 let score = 0, combo = 0, maxCombo = 0;
 let counts = { perfect: 0, good: 0, miss: 0 };
 let notes = [], sparks = [], floats = [];
@@ -460,10 +462,14 @@ function drawResult() {
 }
 
 // ===== GAME LOGIC =====
-// resumeAudio() を await してから呼ぶこと
+// NOTE_TRAVEL 分のリード時間をかけて最初の音符が見えるようにする。
+// audio と visual を AC.currentTime で統一することでズレをなくす。
+const AUDIO_LEAD = NOTE_TRAVEL * (60 / BPM); // 秒 = beats × BEAT_SEC
+let gameStartAudioTime = 0; // この audio 時刻が beat 0
+
 function startGame() {
-  nextBeatT = AC.currentTime + 0.4; beatIdx = 0;
-  gameStart = performance.now() + 400; curBeat = 0;
+  gameStartAudioTime = AC.currentTime + AUDIO_LEAD;
+  nextBeatT = gameStartAudioTime; beatIdx = 0;
   notes = SONG.map(([beat, letter]) => new Note(beat, letter));
   sparks = []; floats = [];
   score = 0; combo = 0; maxCombo = 0;
@@ -514,13 +520,13 @@ function getKeyAt(x, y) {
   return null;
 }
 
-canvas.addEventListener('touchstart', async (e) => {
-  e.preventDefault(); // 同期で呼ぶ必要あり
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  unlockAudio(); // 同期でジェスチャー文脈内に呼ぶ（iOS 必須）
   if (state !== 'playing') {
-    await resumeAudio(); // ← ここで await することで iOS の音声ロックを解除
-    startGame();
+    // AC が起動するまで少し待ってからゲーム開始
+    setTimeout(() => startGame(), 80);
   } else {
-    // playing 中は先に入力処理、audio は既に running のはず
     for (const t of e.changedTouches) {
       const { x, y } = canvasXY(t.clientX, t.clientY);
       const letter = getKeyAt(x, y);
@@ -532,19 +538,19 @@ canvas.addEventListener('touchstart', async (e) => {
 canvas.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
 
 // ===== KEYBOARD INPUT =====
-document.addEventListener('keydown', async (e) => {
+document.addEventListener('keydown', (e) => {
   if (e.repeat) return;
   if (e.key === 'Enter' || e.key === ' ') {
-    if (state !== 'playing') { await resumeAudio(); startGame(); }
+    if (state !== 'playing') { unlockAudio(); setTimeout(() => startGame(), 80); }
     return;
   }
   if (/^[a-zA-Z]$/.test(e.key)) {
-    if (state !== 'playing') { await resumeAudio(); startGame(); return; }
+    if (state !== 'playing') { unlockAudio(); setTimeout(() => startGame(), 80); return; }
     onLetter(e.key.toUpperCase());
   }
 });
-canvas.addEventListener('click', async () => {
-  if (state !== 'playing') { await resumeAudio(); startGame(); }
+canvas.addEventListener('click', () => {
+  if (state !== 'playing') { unlockAudio(); setTimeout(() => startGame(), 80); }
 });
 
 // ===== MAIN LOOP =====
@@ -561,7 +567,8 @@ function frame(now) {
   if (state === 'result') { drawResult(); return; }
 
   schedBeats();
-  curBeat = Math.max(0, (now - gameStart) / (BEAT * 1000));
+  // AC.currentTime 基準で curBeat を計算 → audio と visual が完全同期
+  curBeat = AC ? (AC.currentTime - gameStartAudioTime) / BEAT : 0;
 
   if (AC) {
     const phase = ((AC.currentTime - (nextBeatT - BEAT)) / BEAT) % 1;
